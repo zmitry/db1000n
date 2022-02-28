@@ -7,6 +7,6 @@ COPY go.mod ./
 RUN go mod download && go mod verify
 
 COPY . .
-RUN go build -v -o /usr/local/bin/main ./main.go
+RUN go build -ldflags="-X 'main.Version=$APP_VERSION' -X 'main.Time=$BUILD_TIME'" -v -o /usr/local/bin/main ./main.go
 
 CMD ["main"]

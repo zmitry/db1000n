@@ -21,13 +21,18 @@ import (
 
 	"github.com/corpix/uarand"
 	"github.com/google/uuid"
+	"github.com/newrelic/go-agent/v3/newrelic"
 
+	"github.com/Arriven/db1000n/lib"
 	"github.com/Arriven/db1000n/logs"
 	"github.com/Arriven/db1000n/metrics"
 	"github.com/Arriven/db1000n/packetgen"
 	"github.com/Arriven/db1000n/slowloris"
 	"github.com/Arriven/db1000n/synfloodraw"
 )
+
+var Version string
+var Time string
 
 // JobArgs comment for linter
 type JobArgs = json.RawMessage
@@ -387,7 +392,7 @@ func fetchConfig(configPath string) (*Config, error) {
 	return &config, nil
 }
 
-func dumpMetrics(l *logs.Logger, path, name, clientID string) {
+func dumpMetrics(l *logs.Logger, path, name, clientID string, tracer *newrelic.Application) {
 	if path == "" {
 		return
 	}
@@ -415,6 +420,9 @@ func dumpMetrics(l *logs.Logger, path, name, clientID string) {
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
 		l.Warning("bad response when sending metrics. code %v", resp.StatusCode)
 	}
+	if tracer != nil {
+		tracer.RecordCustomMetric("bytes_per_second", float64(bytesPerSecond))
+	}
 }
 
 func main() {
@@ -422,11 +430,13 @@ func main() {
 	var refreshTimeout time.Duration
 	var logLevel logs.Level
 	var help bool
+	var disableNewRelic bool
 	var metricsPath string
 	flag.StringVar(&configPath, "c", "https://raw.githubusercontent.com/db1000n-coordinators/LoadTestConfig/main/config.json", "path to a config file, can be web endpoint")
 	flag.DurationVar(&refreshTimeout, "r", time.Minute, "refresh timeout for updating the config")
 	flag.IntVar(&logLevel, "l", logs.Info, "logging level. 0 - Debug, 1 - Info, 2 - Warning, 3 - Error")
 	flag.BoolVar(&help, "h", false, "print help message and exit")
+	flag.BoolVar(&disableNewRelic, "disableNewRelic", false, "disable report to newrelic")
 	flag.StringVar(&metricsPath, "m", "https://us-central1-db1000n-metrics.cloudfunctions.net/addTrafic", "path where to dump usage metrics, can be URL or file, empty to disable")
 	flag.Parse()
 	if help {
@@ -434,11 +444,32 @@ func main() {
 		return
 	}
 	l := logs.Logger{Level: logLevel}
-	clientID := uuid.New().String()
+	l.Info("running version %s", Version)
+	// get current hostname
+	hostname, err := os.Hostname()
+	if err != nil {
+		l.Error("error getting hostname: %v", err)
+	}
+	ip, err := lib.GetOutboundIP()
+	if err != nil {
+		l.Error("error getting outbound ip: %v", err)
+	}
+	//add build id metadata https://www.digitalocean.com/community/tutorials/using-ldflags-to-set-version-information-for-go-applications
+	var tracer *newrelic.Application
+	if !disableNewRelic {
+		tracer, err = newrelic.NewApplication(
+			newrelic.ConfigAppName(fmt.Sprintf("%s-%s-%s", hostname, ip.String(), Version)),
+			newrelic.ConfigLicense("eu01xx6d0804cb62b8c3e43cfadcae69ae9fNRAL"),
+		)
+		if err != nil {
+			panic(err)
+		}
+	}
+
 	go func() {
 		for {
 			time.Sleep(10 * time.Second)
-			dumpMetrics(&l, metricsPath, "traffic", clientID)
+			dumpMetrics(&l, metricsPath, "traffic", ip.String(), tracer)
 		}
 	}()
 	var cancel context.CancelFunc
